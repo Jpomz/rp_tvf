@@ -1,0 +1,137 @@
+# ruth powell TVF start
+# Nia Taubr student grant awardee
+
+library(sizeSpectra)
+library(poweRlaw)
+library(tidyverse)
+
+# custom function
+# custom function 
+MLE_tidy <- function(df, rsp_var){
+  # define variables
+  x <- df[[rsp_var]]
+  x_n <- length(x)
+  xmin = min(x)
+  xmax = max(x)
+  log.x = log(x)
+  sum.log.x = sum(log.x)
+  
+  # initial starting point for parameter estimate
+  PL.bMLE = 1/(log(min(x)) - sum.log.x/length(x)) - 1
+  
+  # non-linear minimization  
+  PLB.minLL = nlm(negLL.PLB, 
+                  p = PL.bMLE, x = x, n = length(x), 
+                  xmin = xmin, xmax = xmax,
+                  sumlogx = sum.log.x)
+  
+  # estimate for b
+  PLB.bMLE = PLB.minLL$estimate
+  # minimum estimate of b
+  PLB.minNegLL = PLB.minLL$minimum
+  
+  ## 95% CI calculation
+  bvec = seq(PLB.bMLE - 0.5, PLB.bMLE + 0.5, 1e-05)
+  PLB.LLvals = vector(length = length(bvec))
+  for (i in 1:length(bvec)) {
+    PLB.LLvals[i] = negLL.PLB(bvec[i],
+                              x = x,
+                              n = length(x), 
+                              xmin = xmin,
+                              xmax = xmax,
+                              sumlogx = sum.log.x)
+  }
+  critVal = PLB.minNegLL + qchisq(0.95, 1)/2
+  bIn95 = bvec[PLB.LLvals < critVal]
+  # confidence interval
+  PLB.MLE.bConf = c(min(bIn95), max(bIn95))
+  if (PLB.MLE.bConf[1] == min(bvec) | 
+      PLB.MLE.bConf[2] == max(bvec)) {
+    dev.new()
+    plot(bvec, PLB.LLvals)
+    abline(h = critVal, col = "red")
+    stop("Need to make bvec larger - see R window")
+  }
+  # return b estimate and min/max 95% CI
+  return(data.frame(b = PLB.bMLE,
+                    minCI = min(bIn95),
+                    maxCI = max(bIn95),
+                    x_n = x_n))
+}
+
+dat <- read_csv("dat_dw.csv")
+
+dat_list <- dat %>% 
+  filter(!is.na(dw)) |>
+  group_by(site_number) %>% 
+  group_split()
+
+# 3) create empty list to fill with xmins
+xmin_list = list() 
+
+# 4) get list of xmins for each sample
+set.seed(202002)
+for(i in 1:length(dat_list)){
+  powerlaw = conpl$new(dat_list[[i]]$dw) # get power law estimate from poweRlaw package
+  xmin_list[[i]] = tibble(xmin_clauset = estimate_xmin(powerlaw)$xmin, # extract the xmin from the poweRlaw package
+                          site_number = unique(dat_list[[i]]$site_number))
+}
+
+xmins_clauset = bind_rows(xmin_list)
+
+dat <- left_join(dat, xmins_clauset) |>
+  filter(!is.na(dw))
+
+
+# actually estimate the isd exponent
+mle_lambda <- dat %>%
+  filter( dw >= xmin_clauset) |>
+  group_by(site_number) %>% # site_number # NOT rep/sample
+  nest() %>%
+  mutate(lambda = map(data, # lambda = exponent/slope
+                      MLE_tidy,
+                      "dw")) %>%
+  unnest(cols = lambda) %>%
+  select(-data) %>%
+  ungroup() 
+
+
+mle_lambda %>%
+  ggplot(aes(x = site_number, 
+             y = b,
+             ymin = minCI, 
+             ymax = maxCI,
+             color = site_number)) +
+  geom_pointrange(
+    size = 1,
+    position = position_dodge(width = 0.75)
+  ) +
+  scale_color_manual(values = c("#019AFF", "#FF1984")) +
+  scale_fill_manual(values = c("#019AFF", "#FF1984")) +
+  theme_bw() +
+  labs(y = "Estimated \U03BB") +
+  NULL
+
+
+mle_dat <- dat %>%
+  filter( dw >= xmin_clauset)
+
+mle_dat |>
+  group_by(site_number) |>
+  count()
+xmins_clauset
+dat |>
+  group_by(site_number) |>
+  summarize(min = min(dw), 
+            max = max(dw))
+dat |>
+  mutate(fill = dw >= xmin_clauset) |>
+  #filter(dw < 7) |>
+  ggplot(aes(x = (dw),
+             fill = fill)) +
+  geom_histogram(binwidth = 0.025) +
+  facet_wrap(~site_number,
+             scales = "free_x") +
+  #scale_y_log10() +
+  scale_x_log10() +
+  NULL
